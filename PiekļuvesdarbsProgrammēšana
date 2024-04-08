@@ -1,0 +1,130 @@
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Boolean
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship, sessionmaker, scoped_session
+import hashlib
+from cryptography.fernet import Fernet
+
+# Datubāzes iestatīšana
+Base = declarative_base()
+engine = create_engine('sqlite:///task_manager.db')
+session_factory = sessionmaker(bind=engine)
+Session = scoped_session(session_factory)
+
+# Šifrēšanas atslēgas ģenerēšana uzdevumu aprakstiem
+key = Fernet.generate_key()
+cipher_suite = Fernet(key)
+
+# Datubāzes modeļi
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    username = Column(String, unique=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    tasks = relationship("Task", backref="user")
+
+class Task(Base):
+    __tablename__ = 'tasks'
+    id = Column(Integer, primary_key=True)
+    description = Column(String, nullable=False)
+    is_complete = Column(Boolean, default=False)
+    user_id = Column(Integer, ForeignKey('users.id'))
+
+Base.metadata.create_all(engine)
+
+# Lietotāju pārvaldības funkcijas
+def create_user(username, password):
+    session = Session()
+    user = session.query(User).filter_by(username=username).first()
+    if user:
+        return "Lietotājs jau pastāv!"
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
+    user = User(username=username, password_hash=password_hash)
+    session.add(user)
+    session.commit()
+    return "Lietotājs veiksmīgi izveidots."
+
+def authenticate_user(username, password):
+    session = Session()
+    user = session.query(User).filter_by(username=username).first()
+    if user and user.password_hash == hashlib.sha256(password.encode()).hexdigest():
+        return user
+    else:
+        return None
+
+# Uzdevumu pārvaldības funkcijas
+def add_task(user, description):
+    session = Session()
+    encrypted_description = cipher_suite.encrypt(description.encode()).decode()
+    task = Task(description=encrypted_description, user=user)
+    session.add(task)
+    session.commit()
+    return "Uzdevums veiksmīgi pievienots."
+
+def view_tasks(user):
+    session = Session()
+    tasks = session.query(Task).filter_by(user_id=user.id).all()
+    if not tasks:
+        return "Uzdevumi nav atrasti."
+    task_list = []
+    for task in tasks:
+        decrypted_description = cipher_suite.decrypt(task.description.encode()).decode()
+        task_list.append(f"ID: {task.id}, Apraksts: {decrypted_description}, Pabeigts: {'Jā' if task.is_complete else 'Nē'}")
+    return "\n".join(task_list)
+
+def mark_task_as_done(user, task_id):
+    session = Session()
+    task = session.query(Task).filter_by(user_id=user.id, id=task_id).first()
+    if task:
+        task.is_complete = True
+        session.commit()
+        return "Uzdevums atzīmēts kā pabeigts."
+    return "Uzdevums nav atrasts."
+
+def delete_task(user, task_id):
+    session = Session()
+    task = session.query(Task).filter_by(user_id=user.id, id=task_id).first()
+    if task:
+        session.delete(task)
+        session.commit()
+        return "Uzdevums izdzēsts."
+    return "Uzdevums nav atrasts."
+
+# Galvenā programmas plūsma
+def main():
+    while True:
+        print("\n1. Reģistrēties\n2. Pieslēgties\n3. Iziet")
+        choice = input("Izvēlies opciju: ")
+        if choice == "1":
+            username = input("Lietotājvārds: ")
+            password = input("Parole: ")
+            print(create_user(username, password))
+        elif choice == "2":
+            username = input("Lietotājvārds: ")
+            password = input("Parole: ")
+            user = authenticate_user(username, password)
+            if user:
+                print(f"\nLaipni lūdzam, {username}!")
+                while True:
+                    print("\n1. Pievienot uzdevumu\n2. Skatīt uzdevumus\n3. Atzīmēt uzdevumu kā pabeigtu\n4. Dzēst uzdevumu\n5. Izlogoties")
+                    user_choice = input("Izvēlies opciju: ")
+                    if user_choice == "1":
+                        description = input("Uzdevuma apraksts: ")
+                        print(add_task(user, description))
+                    elif user_choice == "2":
+                        print(view_tasks(user))
+                    elif user_choice == "3":
+                        task_id = int(input("Uzdevuma ID, ko atzīmēt kā pabeigtu: "))
+                        print(mark_task_as_done(user, task_id))
+                    elif user_choice == "4":
+                        task_id = int(input("Uzdevuma ID, ko dzēst: "))
+                        print(delete_task(user, task_id))
+                    elif user_choice == "5":
+                        break
+            else:
+                print("Nepareizi akreditācijas dati.")
+        elif choice == "3":
+            print("Iziet...")
+            break
+
+if __name__ == "__main__":
+    main()
